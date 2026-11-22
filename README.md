@@ -2,7 +2,7 @@
 
 Ziraboard is a small full-stack dashboard for a team that needs to manage its people, its projects and a record of who changed what. It has sign-up and sign-in, three roles with different permissions, create/edit/delete screens for projects and users, search with filters and pagination, and validation messages on every form.
 
-- **Live demo:** [ADD: your Render URL, e.g. https://ziraboard.onrender.com]
+- **Live demo:** [ADD: your Vercel URL, e.g. https://ziraboard.vercel.app]
 - **Demo video:** [ADD: YouTube or LinkedIn link]
 
 On the live demo, use the **Try a demo account** buttons on the sign-in page to enter as an Admin, a Manager or a Member. No password is needed, and none is published anywhere.
@@ -19,11 +19,11 @@ Built for the UneeQ Interns Web Development track, task "Production-Ready SaaS D
 | CRUD pages for management | Projects: create, view, edit, delete. Users (admins): add, edit, change role, suspend, delete. Your own profile and password on Settings. |
 | Search, filter and pagination | Projects: text search plus status, priority and owner filters, five sort orders and page sizes of 10, 20 or 50. Users: search, role and status filters. Activity: filter by person and type. Filters live in the URL, so a filtered view survives a refresh and can be shared. |
 | Form validation and error states | One set of [Zod](https://zod.dev) rules is shared by the browser and the server. Fields are checked when you leave them and again on submit, the server sends back per-field errors, and the form shows them under the right field. Lists have loading skeletons, empty states, and an error state with a retry button. |
-| Deployment | `render.yaml` deploys it to Render's free plan in one step. A `Dockerfile` is included for other hosts, and GitHub Actions runs the tests on every push. |
+| Deployment | Deployed on Vercel's free plan (React app plus the API as a serverless function) with a free Supabase Postgres database. A `Dockerfile` is included for other hosts, and GitHub Actions runs the tests on every push. |
 
 | Success criterion | Evidence |
 | --- | --- |
-| App can be installed and run by another person | Four commands in [Getting started](#getting-started). It uses Node's built-in SQLite, so there is no database server to install and no native module to compile. Demo data loads on the first start. |
+| App can be installed and run by another person | Four commands in [Getting started](#getting-started). Locally it runs PGlite, a full Postgres that ships as an npm package, so there is no database server to install and no native module to compile. Demo data loads on the first start. |
 | Main flows work end-to-end | 23 automated tests drive the real API over HTTP: register, sign in, sign out, create, update and delete a project, search and paginate, suspend a user. Each flow was also checked by hand in the browser. |
 | Validation and permissions are visible | See the screenshots below: locked buttons with the reason next to them, a read-only banner on projects you can't edit, a "no access" page, and a permission table on Settings that highlights your role. |
 
@@ -86,7 +86,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5174. The first start creates `data/ziraboard.db` and fills it with a demo team: 23 people, 42 projects and a month of activity. Click a demo account to sign in, or create your own account (new accounts start as Members).
+Open http://localhost:5174. The first start creates a local Postgres database in `data/pglite` (PGlite) and fills it with a demo team: 23 people, 42 projects and a month of activity. Click a demo account to sign in, or create your own account (new accounts start as Members).
 
 To run the production build locally:
 
@@ -111,21 +111,25 @@ All settings are optional. Copy `.env.example` to `.env` to change them. None of
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PORT` | `3001` | Port in production. Render sets it for you. |
+| `DATABASE_URL` or `POSTGRES_URL` | not set | Postgres connection string. On Vercel the Supabase integration sets `POSTGRES_URL`. When neither is set, a local PGlite database is used. |
+| `PORT` | `3001` | Port for `npm start`. |
 | `API_PORT` | `3001` | Port the API uses during `npm run dev`. |
-| `DATA_DIR` | `./data` | Folder for the SQLite file. |
+| `DATA_DIR` | `./data` | Folder for the local PGlite database. |
 | `DEMO_LOGIN` | `true` | Show the one-click demo accounts. Set to `false` for a private team. |
-| `DEMO_RESET_HOURS` | `0` | Wipe and re-seed the data every N hours. The Render blueprint uses 6 so the public demo stays usable. |
+| `DEMO_RESET_HOURS` | `0` locally, `24` on Vercel | Wipe and re-seed the demo data when it is older than N hours, so the public demo stays usable. |
 
 ## Deploying
 
-### Render (free)
+### Vercel + Supabase (free, no card)
+
+The React app is served by Vercel, the API runs as a Vercel serverless function (`api/index.ts`, routed by `vercel.json`), and the data lives in a free Supabase Postgres database.
 
 1. Push this repository to GitHub.
-2. On [Render](https://render.com), choose **New → Blueprint** and select the repository. Render reads `render.yaml`.
-3. Wait for the first build (about three minutes). The URL appears at the top of the service page.
+2. On [Vercel](https://vercel.com), choose **Add New → Project** and import the repository. Keep the detected settings and deploy.
+3. In the Vercel project, open **Storage → Connect Database → Supabase** and create a free database. Vercel adds `POSTGRES_URL` and the other connection settings to the project for you, so no password is copied by hand.
+4. Redeploy. The first request creates the tables and loads the demo data.
 
-The free plan sleeps after 15 minutes without traffic, so the first visit after a pause takes up to a minute. Its disk is also temporary: the database goes back to the demo data on every restart or redeploy. That suits a public demo. For real use, attach a persistent disk and point `DATA_DIR` at it.
+The public demo resets to the demo data every 24 hours (`DEMO_RESET_HOURS`). Supabase pauses a free project after a week without visits; it can be resumed from the Supabase dashboard.
 
 ### Docker
 
@@ -133,6 +137,10 @@ The free plan sleeps after 15 minutes without traffic, so the first visit after 
 docker build -t ziraboard .
 docker run -p 3000:3000 -v ziraboard-data:/data ziraboard
 ```
+
+Without a database URL the container uses PGlite and keeps its data in the `/data` volume. Set `DATABASE_URL` to use an external Postgres instead.
+
+Without a database URL the container uses PGlite and keeps its data in the `/data` volume. Set `DATABASE_URL` to use an external Postgres instead.
 
 ## How it works
 
@@ -148,13 +156,13 @@ flowchart LR
     R --> A[loadUser · requireAuth<br/>requirePermission]
     R --> V2[Same Zod rules]
     R --> P2["Same can()"]
-    R --> DB[(SQLite<br/>node:sqlite)]
+    R --> DB[(PostgreSQL<br/>Supabase in production,<br/>PGlite locally)]
     R --> L[Activity log]
   end
 ```
 
 - **Client:** React 19, React Router 7 and TanStack Query, built with Vite. Lists keep the previous page on screen (faded) while the next one loads, so the table doesn't jump.
-- **Server:** Express 5 with Node's built-in `node:sqlite`. Every query uses bound parameters. Search text escapes `%` and `_`, so typing them doesn't act as a wildcard.
+- **Server:** Express 5 with PostgreSQL: Supabase in production through `node-postgres`, and PGlite on your computer and in the tests, so the tests run against real Postgres. Every query uses bound parameters. Search text escapes `%` and `_`, so typing them doesn't act as a wildcard.
 - **Shared:** `shared/` holds the validation rules, the permission function and the response types. Both sides import them, so the browser and the API can't drift apart.
 
 ### Data model
@@ -192,8 +200,11 @@ Errors always look like `{ "error": { "message": "...", "fieldErrors": { "name":
 ### Project structure
 
 ```
+api/
+  index.ts          Vercel serverless entry point
 server/
-  index.ts          start-up: open the database, seed, listen
+  index.ts          local start-up: open the database, seed, listen
+  config.ts         settings from environment variables
   app.ts            Express app (also used by the tests)
   auth.ts           password hashing, sessions, role middleware, sign-in limiter
   db.ts             schema and helpers
@@ -235,7 +246,7 @@ tests/              API and permission tests
 
 - The sign-in limiter lives in memory, so it resets when the server restarts and isn't shared between several servers.
 - There is no email sending yet, so there is no "forgot password" flow.
-- On Render's free plan the data resets on restart (see Deploying).
+- The public demo resets every 24 hours, and Supabase pauses free projects after a week without visits (see Deploying).
 
 ## Author
 
