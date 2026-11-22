@@ -1,16 +1,17 @@
 import type { SessionUser } from '../shared/types'
-import { nowIso, type DB } from './db'
+import { nowIso, type Queryable } from './db'
 
-export function logActivity(
-  db: DB,
+export async function logActivity(
+  db: Queryable,
   actor: Pick<SessionUser, 'id' | 'name'>,
   action: string,
   entityType: 'project' | 'user' | 'auth',
   entityId: number | null,
   summary: string,
 ) {
-  db.prepare(
+  await db.run(
     `INSERT INTO activity (actor_id, actor_name, action, entity_type, entity_id, summary, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(actor.id, actor.name, action, entityType, entityId, summary, nowIso())
+    [actor.id, actor.name, action, entityType, entityId, summary, nowIso()],
+  )
 }

@@ -7,7 +7,7 @@
 import type { Role } from '../shared/permissions'
 import { PRIORITIES, PROJECT_STATUSES, type Priority, type ProjectStatus } from '../shared/schemas'
 import { NO_PASSWORD } from './auth'
-import { transaction, type DB } from './db'
+import { SETUP_LOCK, type DB, type Queryable } from './db'
 
 function mulberry32(seed: number) {
   return () => {
@@ -71,79 +71,123 @@ const DESCRIPTIONS = [
   '',
 ]
 
-export function seed(db: DB, now = new Date()) {
+/** One INSERT for many rows. Returns the generated ids in the same order. */
+async function insertMany(t: Queryable, table: string, cols: string[], rows: unknown[][]): Promise<number[]> {
+  if (!rows.length) return []
+  const values = rows.map((r) => `(${r.map(() => '?').join(', ')})`).join(', ')
+  const out = await t.all<{ id: number }>(`INSERT INTO ${table} (${cols.join(', ')}) VALUES ${values} RETURNING id`, rows.flat())
+  return out.map((r) => r.id)
+}
+
+export async function seed(t: Queryable, now = new Date()) {
   const rand = mulberry32(20261117)
   const pick = <T>(list: readonly T[]) => list[Math.floor(rand() * list.length)]!
   const daysAgo = (d: number, jitterHours = 10) =>
     new Date(now.getTime() - d * 86_400_000 - Math.floor(rand() * jitterHours * 3_600_000)).toISOString()
 
-  transaction(db, () => {
-    const insertUser = db.prepare(
-      `INSERT INTO users (name, email, password_hash, role, status, is_demo, created_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    const users: { id: number; name: string; role: Role }[] = []
-    for (const u of DEMO_USERS) {
-      const { lastInsertRowid } = insertUser.run(u.name, u.email, NO_PASSWORD, u.role, 'active', 1, daysAgo(120), daysAgo(1))
-      users.push({ id: Number(lastInsertRowid), name: u.name, role: u.role })
-    }
-    TEAM.forEach(([name, role], i) => {
-      const email = `${name.toLowerCase().replace(/[^a-z]+/g, '.')}@ziraboard.test`
-      const status = i === 12 || i === 17 ? 'suspended' : 'active'
-      const { lastInsertRowid } = insertUser.run(name, email, NO_PASSWORD, role, status, 0, daysAgo(30 + i * 4), i % 5 === 4 ? null : daysAgo(i % 9))
-      users.push({ id: Number(lastInsertRowid), name, role })
-    })
+  const userRows: unknown[][] = []
+  const users: { id: number; name: string; role: Role }[] = []
+  for (const u of DEMO_USERS) {
+    userRows.push([u.name, u.email, NO_PASSWORD, u.role, 'active', true, daysAgo(120), daysAgo(1)])
+    users.push({ id: 0, name: u.name, role: u.role })
+  }
+  TEAM.forEach(([name, role], i) => {
+    const email = `${name.toLowerCase().replace(/[^a-z]+/g, '.')}@ziraboard.test`
+    const status = i === 12 || i === 17 ? 'suspended' : 'active'
+    userRows.push([name, email, NO_PASSWORD, role, status, false, daysAgo(30 + i * 4), i % 5 === 4 ? null : daysAgo(i % 9)])
+    users.push({ id: 0, name, role })
+  })
+  const userIds = await insertMany(t, 'users', ['name', 'email', 'password_hash', 'role', 'status', 'is_demo', 'created_at', 'last_login_at'], userRows)
+  users.forEach((u, i) => (u.id = userIds[i]!))
 
-    const owners = users.filter((u) => u.role !== 'member')
-    const insertProject = db.prepare(
-      `INSERT INTO projects (name, description, status, priority, owner_id, due_date, budget, progress, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    const projects: { id: number; name: string; ownerName: string }[] = []
-    PROJECT_NAMES.forEach((name, i) => {
-      const status = pick(PROJECT_STATUSES) as ProjectStatus
-      const priority = pick(PRIORITIES) as Priority
-      // The demo manager owns several projects so the "own projects" rule is easy to try.
-      const owner = i % 6 === 0 ? owners[1]! : pick(owners)
-      const progress =
-        status === 'completed' ? 100 : status === 'planning' ? Math.floor(rand() * 4) * 5 : 10 + Math.floor(rand() * 17) * 5
-      const due = rand() < 0.15 ? null : new Date(now.getTime() + (Math.floor(rand() * 120) - 30) * 86_400_000).toISOString().slice(0, 10)
-      const budget = rand() < 0.25 ? null : Math.round(rand() * 80 + 2) * 1000
-      const created = daysAgo(40 + Math.floor(rand() * 60))
-      const updated = daysAgo(Math.floor(rand() * 25))
-      const { lastInsertRowid } = insertProject.run(name, pick(DESCRIPTIONS), status, priority, owner.id, due, budget, progress, created, updated)
-      projects.push({ id: Number(lastInsertRowid), name, ownerName: owner.name })
-    })
+  const owners = users.filter((u) => u.role !== 'member')
+  const projectRows: unknown[][] = []
+  const projects: { id: number; name: string }[] = []
+  PROJECT_NAMES.forEach((name, i) => {
+    const status = pick(PROJECT_STATUSES) as ProjectStatus
+    const priority = pick(PRIORITIES) as Priority
+    // The demo manager owns several projects so the "own projects" rule is easy to try.
+    const owner = i % 6 === 0 ? owners[1]! : pick(owners)
+    const progress =
+      status === 'completed' ? 100 : status === 'planning' ? Math.floor(rand() * 4) * 5 : 10 + Math.floor(rand() * 17) * 5
+    const due = rand() < 0.15 ? null : new Date(now.getTime() + (Math.floor(rand() * 120) - 30) * 86_400_000).toISOString().slice(0, 10)
+    const budget = rand() < 0.25 ? null : Math.round(rand() * 80 + 2) * 1000
+    const created = daysAgo(40 + Math.floor(rand() * 60))
+    const updated = daysAgo(Math.floor(rand() * 25))
+    projectRows.push([name, pick(DESCRIPTIONS), status, priority, owner.id, due, budget, progress, created, updated])
+    projects.push({ id: 0, name })
+  })
+  const projectIds = await insertMany(
+    t,
+    'projects',
+    ['name', 'description', 'status', 'priority', 'owner_id', 'due_date', 'budget', 'progress', 'created_at', 'updated_at'],
+    projectRows,
+  )
+  projects.forEach((p, i) => (p.id = projectIds[i]!))
 
-    const insertActivity = db.prepare(
-      `INSERT INTO activity (actor_id, actor_name, action, entity_type, entity_id, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    const active = users.filter((_, i) => i !== 15 && i !== 20)
-    for (let i = 0; i < 260; i++) {
-      const actor = pick(active)
-      const when = daysAgo(Math.floor(Math.pow(rand(), 1.6) * 30), 24)
-      const roll = rand()
-      if (roll < 0.45 || actor.role === 'member') {
-        insertActivity.run(actor.id, actor.name, 'auth.login', 'auth', actor.id, `${actor.name} signed in`, when)
-      } else if (roll < 0.85) {
-        const p = pick(projects)
-        const change = pick(['status Planning → Active', 'progress 40% → 55%', 'priority Medium → High', 'progress 70% → 85%', 'status Active → On hold'])
-        insertActivity.run(actor.id, actor.name, 'project.updated', 'project', p.id, `${actor.name} updated “${p.name}”: ${change}`, when)
-      } else {
-        const p = pick(projects)
-        insertActivity.run(actor.id, actor.name, 'project.created', 'project', p.id, `${actor.name} created “${p.name}”`, when)
-      }
+  const activityRows: unknown[][] = []
+  const active = users.filter((_, i) => i !== 15 && i !== 20)
+  for (let i = 0; i < 260; i++) {
+    const actor = pick(active)
+    const when = daysAgo(Math.floor(Math.pow(rand(), 1.6) * 30), 24)
+    const roll = rand()
+    if (roll < 0.45 || actor.role === 'member') {
+      activityRows.push([actor.id, actor.name, 'auth.login', 'auth', actor.id, `${actor.name} signed in`, when])
+    } else if (roll < 0.85) {
+      const p = pick(projects)
+      const change = pick(['status Planning → Active', 'progress 40% → 55%', 'priority Medium → High', 'progress 70% → 85%', 'status Active → On hold'])
+      activityRows.push([actor.id, actor.name, 'project.updated', 'project', p.id, `${actor.name} updated “${p.name}”: ${change}`, when])
+    } else {
+      const p = pick(projects)
+      activityRows.push([actor.id, actor.name, 'project.created', 'project', p.id, `${actor.name} created “${p.name}”`, when])
     }
+  }
+  await insertMany(t, 'activity', ['actor_id', 'actor_name', 'action', 'entity_type', 'entity_id', 'summary', 'created_at'], activityRows)
+  await t.run(
+    `INSERT INTO app_meta (key, value) VALUES ('seeded_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [new Date().toISOString()],
+  )
+}
+
+const WIPE = 'TRUNCATE sessions, activity, projects, users, app_meta RESTART IDENTITY CASCADE'
+
+/** Seed an empty database. Safe when several servers start at once. */
+export async function ensureSeeded(db: DB) {
+  await db.tx(async (t) => {
+    await t.get('SELECT pg_advisory_xact_lock(?)', [SETUP_LOCK])
+    const row = await t.get<{ n: number }>('SELECT COUNT(*)::int AS n FROM users')
+    if ((row?.n ?? 0) === 0) await seed(t)
   })
 }
 
-export function isEmpty(db: DB) {
-  return (db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n === 0
+/** Delete everything and seed again. */
+export async function resetDemo(db: DB) {
+  await db.tx(async (t) => {
+    await t.get('SELECT pg_advisory_xact_lock(?)', [SETUP_LOCK])
+    await t.exec(WIPE)
+    await seed(t)
+  })
 }
 
-/** Delete everything and seed again. Used by the optional demo reset timer. */
-export function resetDemo(db: DB) {
-  transaction(db, () => {
-    db.exec('DELETE FROM sessions; DELETE FROM activity; DELETE FROM projects; DELETE FROM users;')
-  })
-  seed(db)
+/**
+ * Reset the shared demo data once it is older than `hours`. Checked at most
+ * every 5 minutes per server, so it works on serverless hosts without a timer.
+ */
+export function demoResetter(db: DB, hours: number) {
+  let lastCheck = 0
+  return async () => {
+    if (hours <= 0 || Date.now() - lastCheck < 5 * 60_000) return
+    lastCheck = Date.now()
+    const maxAge = hours * 3_600_000
+    const stale = (value?: string) => !value || Date.now() - new Date(value).getTime() > maxAge
+    const meta = await db.get<{ value: string }>(`SELECT value FROM app_meta WHERE key = 'seeded_at'`)
+    if (!stale(meta?.value)) return
+    await db.tx(async (t) => {
+      await t.get('SELECT pg_advisory_xact_lock(?)', [SETUP_LOCK])
+      const again = await t.get<{ value: string }>(`SELECT value FROM app_meta WHERE key = 'seeded_at'`)
+      if (!stale(again?.value)) return
+      await t.exec(WIPE)
+      await seed(t)
+    })
+  }
 }

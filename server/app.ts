@@ -7,6 +7,7 @@ import type { AppConfig } from '../shared/types'
 import { loadUser, requireCsrfHeader } from './auth'
 import type { DB } from './db'
 import { errorHandler, notFound } from './http'
+import { demoResetter } from './seed'
 import { activityRoutes, statsRoutes } from './routes/activity'
 import { authRoutes } from './routes/auth'
 import { projectRoutes } from './routes/projects'
@@ -19,6 +20,8 @@ export interface AppOptions {
   secureCookies: boolean
   /** Folder with the built client (dist/). Served when it exists. */
   clientDir?: string
+  /** Wipe and re-seed the demo data when it is older than this many hours (0 = never). */
+  demoResetHours?: number
 }
 
 export function createApp(db: DB, options: AppOptions) {
@@ -31,6 +34,11 @@ export function createApp(db: DB, options: AppOptions) {
 
   const api = express.Router()
   api.use(requireCsrfHeader)
+  const maybeReset = demoResetter(db, options.demoResetHours ?? 0)
+  api.use(async (_req, _res, next) => {
+    await maybeReset()
+    next()
+  })
   api.use(loadUser(db))
   api.get('/health', (_req, res) => {
     res.json({ ok: true })

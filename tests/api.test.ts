@@ -1,17 +1,25 @@
 import request from 'supertest'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from '../server/app'
 import { openDb, type DB } from '../server/db'
-import { seed } from '../server/seed'
+import { resetDemo } from '../server/seed'
 
 const H = { 'X-Requested-With': 'ziraboard' }
 
 let db: DB
 let app: ReturnType<typeof createApp>
 
-beforeEach(() => {
-  db = openDb(':memory:')
-  seed(db)
+// One in-memory Postgres (PGlite) for the file, wiped and re-seeded before each test.
+beforeAll(async () => {
+  db = await openDb()
+}, 60_000)
+
+afterAll(async () => {
+  await db.close()
+})
+
+beforeEach(async () => {
+  await resetDemo(db)
   app = createApp(db, { demoLogin: true, secureCookies: false })
 })
 
