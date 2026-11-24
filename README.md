@@ -3,7 +3,6 @@
 Ziraboard is a small full-stack dashboard for a team that needs to manage its people, its projects and a record of who changed what. It has sign-up and sign-in, three roles with different permissions, create/edit/delete screens for projects and users, search with filters and pagination, and validation messages on every form.
 
 - **Live demo:** https://ziraboard.vercel.app (one-click demo accounts on the sign-in page)
-- **Demo video:** [ADD: YouTube or LinkedIn link]
 
 On the live demo, use the **Try a demo account** buttons on the sign-in page to enter as an Admin, a Manager or a Member. No password is needed, and none is published anywhere.
 
@@ -251,7 +250,5 @@ tests/              API and permission tests
 ## Author
 
 Ziad Mohamed Emad, UneeQ Interns, Web Development track.
-
-[ADD: your LinkedIn profile URL]
 
 Released under the [MIT License](LICENSE).
